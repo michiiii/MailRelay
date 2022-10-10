@@ -48,7 +48,7 @@ def main():
          <body>
             <div class='content'>
                <p>Dears,</p>
-               <p>if you receive this email the your SMTP server is vulnerable to<strong> Open Mail Relay</strong></p>
+               <p>if you receive this email, your SMTP server is vulnerable to<strong> Open Mail Relay</strong></p>
                <p> Affected SMTP Server: """ + smtpserver + """</p>
                <p>Please forward this email to """ + contact_email + """</p>
                <p></p>         

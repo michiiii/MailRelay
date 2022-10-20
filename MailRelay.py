@@ -18,6 +18,8 @@ from email import encoders
 from email.mime.base import MIMEBase
 from os.path import basename
 from email.mime.application import MIMEApplication
+import dns.resolver
+
 
 class bcolors:
     OK = '\033[92m'
@@ -28,6 +30,7 @@ def main():
    args = parse_args()
 
    sender_email = args.sender_email
+   sender_domain = sender_email.split('@')[1]
    receiver_email = args.receiver_email
    contact_email = args.contact
    starttls = False
@@ -42,6 +45,31 @@ def main():
    with open(args.filename) as file:
     smtpservers = file.readlines()
     smtpservers = [smtpserver.rstrip() for smtpserver in smtpservers]
+
+    ### Checking SPF
+    print()
+    print ("Testing domain", sender_domain, "for SPF record...")
+    try:
+        test_spf = dns.resolver.resolve(sender_domain , 'TXT')
+        for dns_data in test_spf:
+            if 'spf1' in str(dns_data):
+                print (bcolors.OK + "  [PASS] SPF record found   :"+ bcolors.ENDC,dns_data)
+    except:
+        print (bcolors.FAIL + "  [FAIL] SPF record not found."+ bcolors.ENDC)
+        pass
+
+    ### Checking DMARC
+    print()
+    print ("Testing domain", sender_domain, "for DMARC record...")
+    try:
+        test_dmarc = dns.resolver.resolve('_dmarc.' + sender_domain , 'TXT')
+        for dns_data in test_dmarc:
+            if 'DMARC1' in str(dns_data):
+                print (bcolors.OK + "  [PASS] DMARC record found :"+ bcolors.ENDC,dns_data)
+    except:
+        print (bcolors.FAIL + "  [FAIL] DMARC record not found." + bcolors.ENDC)
+        pass    
+
 
    for smtpserver in smtpservers:
       message = MIMEMultipart("alternative")

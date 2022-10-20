@@ -8,7 +8,7 @@ You should always test if internal users can send emails to:
 - external users
 
 ```
-usage: MailRelay.py [-h] --receiver RECEIVER_EMAIL --sender SENDER_EMAIL --targets FILENAME --contact CONTACT
+usage: MailRelay.py [-h] --receiver RECEIVER_EMAIL --sender SENDER_EMAIL --targets FILENAME --contact CONTACT [--port PORT] [--ssl]
 
 Open Relay tester
 
@@ -20,5 +20,7 @@ options:
                         Sender of the mail
   --targets FILENAME    File with SMTP servers to test
   --contact CONTACT     E-Mail address to forward the mail to
+  --port PORT           SMTP port to connect to
+  --ssl                 Whether to use SMTP_SSL or not
 ```
 

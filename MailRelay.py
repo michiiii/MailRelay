@@ -52,8 +52,12 @@ def main():
     try:
         test_spf = dns.resolver.resolve(sender_domain , 'TXT')
         for dns_data in test_spf:
-            if 'spf1' in str(dns_data):
-                print (bcolors.OK + "  [PASS] SPF record found   :"+ bcolors.ENDC,dns_data)
+            if 'spf1' in str(dns_data) and '-all' in str(dns_data):
+                print (bcolors.OK + "  [PASS] Strict SPF record found   :"+ bcolors.ENDC,dns_data)
+            elif 'spf1' in str(dns_data) and '~all' in str(dns_data):
+                print (bcolors.OK + "  [PASS] Moderate SPF record found   :"+ bcolors.ENDC,dns_data)
+            elif 'spf1' in str(dns_data) and '+all' in str(dns_data):
+                print (bcolors.FAIL + "  [FAIL] Lax SPF record found   :"+ bcolors.ENDC,dns_data)                
     except:
         print (bcolors.FAIL + "  [FAIL] SPF record not found."+ bcolors.ENDC)
         pass
@@ -64,8 +68,13 @@ def main():
     try:
         test_dmarc = dns.resolver.resolve('_dmarc.' + sender_domain , 'TXT')
         for dns_data in test_dmarc:
-            if 'DMARC1' in str(dns_data):
-                print (bcolors.OK + "  [PASS] DMARC record found :"+ bcolors.ENDC,dns_data)
+            if 'DMARC1' in str(dns_data) and 'p=reject' in str(dns_data):
+                print (bcolors.OK + "  [PASS] Strict DMARC record found :"+ bcolors.ENDC,dns_data)
+            elif 'DMARC1' in str(dns_data) and 'p=quarantine' in str(dns_data):
+                print (bcolors.OK + "  [PASS] Moderate DMARC record found :"+ bcolors.ENDC,dns_data)
+            elif 'DMARC1' in str(dns_data) and 'p=none' in str(dns_data):
+                print (bcolors.FAIL + "  [FAIL] Lax DMARC record found :"+ bcolors.ENDC,dns_data)
+
     except:
         print (bcolors.FAIL + "  [FAIL] DMARC record not found." + bcolors.ENDC)
         pass    
@@ -73,7 +82,7 @@ def main():
 
    for smtpserver in smtpservers:
       message = MIMEMultipart("alternative")
-      message["Subject"] = "Proof-of-Concept // Open Mail Relay on "+ smtpserver
+      message["Subject"] = "Proof-of-Concept // Insecure Mail Relay on "+ smtpserver
       message["From"] = sender_email
       message["To"] = receiver_email
 
@@ -88,7 +97,8 @@ def main():
          <body>
             <div class='content'>
                <p>Dears,</p>
-               <p>if you receive this email, your SMTP server is vulnerable to<strong> Open Mail Relay</strong></p>
+               <p>if you receive this email, your SMTP server is vulnerable to<strong> Open Mail Relay</strong>.</p>
+               <p>Alternatively, you have not correctly configured Sender Policy Framework (SPF) and Domain-based Message Authentication, Reporting & Conformance (DMARC).</p>
                <p> Affected SMTP Server: """ + smtpserver + """</p>
                <p>Please forward this email to """ + contact_email + """</p>
                <p></p>         

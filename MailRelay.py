@@ -1,197 +1,450 @@
-#! /usr/bin/env python
+#!/usr/bin/env python3
 """
-Small script for testing open mail relays. 
+SMTP Open Relay Tester
 
-You should always test if internal users can send emails to:
-- other internal users
-- external users
+Tests SMTP servers for open relay vulnerabilities and checks SPF/DMARC configurations.
 
+Usage:
+    python smtp_relay_tester.py --sender test@example.com --receiver victim@example.com --contact security@example.com --targets servers.txt
+
+Targets file format (one per line):
+    mail.example.com
+    mail.example.com:587
+    mail.example.com:465:ssl
+    mail.example.com:25:starttls
 """
-from __future__ import print_function
+
 import sys
 import argparse
 import smtplib
 import ssl
+import socket
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 from email import encoders
-from email.mime.base import MIMEBase
-from os.path import basename
-from email.mime.application import MIMEApplication
 import dns.resolver
 
 
-class bcolors:
+class Colors:
+    """ANSI color codes for terminal output"""
     OK = '\033[92m'
+    WARN = '\033[93m'
     FAIL = '\033[91m'
+    INFO = '\033[94m'
     ENDC = '\033[0m'
+    BOLD = '\033[1m'
 
-def main():
-   args = parse_args()
 
-   sender_email = args.sender_email
-   sender_domain = sender_email.split('@')[1]
-   receiver_email = args.receiver_email
-   contact_email = args.contact
-   starttls = False
-   port = 25
+def print_banner():
+    """Print script banner"""
+    print(f"\n{Colors.BOLD}{'='*70}")
+    print("SMTP Open Relay Tester")
+    print(f"{'='*70}{Colors.ENDC}\n")
 
-   if args.ssl:
-    starttls = True
 
-   if args.port:
-    port = args.port
-
-   with open(args.filename) as file:
-    smtpservers = file.readlines()
-    smtpservers = [smtpserver.rstrip() for smtpserver in smtpservers]
-
-    ### Checking SPF
-    print()
-    print ("Testing domain", sender_domain, "for SPF record...")
+def check_spf(domain):
+    """Check SPF record for domain"""
+    print(f"\n{Colors.INFO}[*] Checking SPF record for {domain}...{Colors.ENDC}")
     try:
-        test_spf = dns.resolver.resolve(sender_domain , 'TXT')
-        for dns_data in test_spf:
-            if 'spf1' in str(dns_data) and '-all' in str(dns_data):
-                print (bcolors.OK + "  [PASS] Strict SPF record found   :"+ bcolors.ENDC,dns_data)
-            elif 'spf1' in str(dns_data) and '~all' in str(dns_data):
-                print (bcolors.OK + "  [PASS] Moderate SPF record found   :"+ bcolors.ENDC,dns_data)
-            elif 'spf1' in str(dns_data) and '+all' in str(dns_data):
-                print (bcolors.FAIL + "  [FAIL] Lax SPF record found   :"+ bcolors.ENDC,dns_data)                
-    except:
-        print (bcolors.FAIL + "  [FAIL] SPF record not found."+ bcolors.ENDC)
-        pass
+        records = dns.resolver.resolve(domain, 'TXT')
+        spf_found = False
+        
+        for record in records:
+            record_str = str(record)
+            if 'v=spf1' in record_str.lower():
+                spf_found = True
+                if '-all' in record_str:
+                    print(f"{Colors.OK}    [PASS] Strict SPF (-all): {record}{Colors.ENDC}")
+                elif '~all' in record_str:
+                    print(f"{Colors.OK}    [PASS] Soft fail SPF (~all): {record}{Colors.ENDC}")
+                elif '?all' in record_str:
+                    print(f"{Colors.WARN}    [WARN] Neutral SPF (?all): {record}{Colors.ENDC}")
+                elif '+all' in record_str:
+                    print(f"{Colors.FAIL}    [FAIL] Permissive SPF (+all): {record}{Colors.ENDC}")
+                else:
+                    print(f"{Colors.WARN}    [WARN] SPF found: {record}{Colors.ENDC}")
+        
+        if not spf_found:
+            print(f"{Colors.FAIL}    [FAIL] No SPF record found{Colors.ENDC}")
+            
+    except dns.resolver.NXDOMAIN:
+        print(f"{Colors.FAIL}    [FAIL] Domain does not exist{Colors.ENDC}")
+    except dns.resolver.NoAnswer:
+        print(f"{Colors.FAIL}    [FAIL] No TXT records found{Colors.ENDC}")
+    except Exception as e:
+        print(f"{Colors.FAIL}    [FAIL] Error checking SPF: {e}{Colors.ENDC}")
 
-    ### Checking DMARC
-    print()
-    print ("Testing domain", sender_domain, "for DMARC record...")
+
+def check_dmarc(domain):
+    """Check DMARC record for domain"""
+    print(f"\n{Colors.INFO}[*] Checking DMARC record for {domain}...{Colors.ENDC}")
     try:
-        test_dmarc = dns.resolver.resolve('_dmarc.' + sender_domain , 'TXT')
-        for dns_data in test_dmarc:
-            if 'DMARC1' in str(dns_data) and 'p=reject' in str(dns_data):
-                print (bcolors.OK + "  [PASS] Strict DMARC record found :"+ bcolors.ENDC,dns_data)
-            elif 'DMARC1' in str(dns_data) and 'p=quarantine' in str(dns_data):
-                print (bcolors.OK + "  [PASS] Moderate DMARC record found :"+ bcolors.ENDC,dns_data)
-            elif 'DMARC1' in str(dns_data) and 'p=none' in str(dns_data):
-                print (bcolors.FAIL + "  [FAIL] Lax DMARC record found :"+ bcolors.ENDC,dns_data)
+        records = dns.resolver.resolve(f'_dmarc.{domain}', 'TXT')
+        
+        for record in records:
+            record_str = str(record)
+            if 'v=DMARC1' in record_str or 'v=dmarc1' in record_str.lower():
+                if 'p=reject' in record_str.lower():
+                    print(f"{Colors.OK}    [PASS] Strict DMARC (reject): {record}{Colors.ENDC}")
+                elif 'p=quarantine' in record_str.lower():
+                    print(f"{Colors.OK}    [PASS] Moderate DMARC (quarantine): {record}{Colors.ENDC}")
+                elif 'p=none' in record_str.lower():
+                    print(f"{Colors.WARN}    [WARN] Monitoring DMARC (none): {record}{Colors.ENDC}")
+                else:
+                    print(f"{Colors.WARN}    [WARN] DMARC found: {record}{Colors.ENDC}")
+                    
+    except dns.resolver.NXDOMAIN:
+        print(f"{Colors.FAIL}    [FAIL] No DMARC record found{Colors.ENDC}")
+    except dns.resolver.NoAnswer:
+        print(f"{Colors.FAIL}    [FAIL] No DMARC record found{Colors.ENDC}")
+    except Exception as e:
+        print(f"{Colors.FAIL}    [FAIL] Error checking DMARC: {e}{Colors.ENDC}")
 
-    except:
-        print (bcolors.FAIL + "  [FAIL] DMARC record not found." + bcolors.ENDC)
-        pass    
+
+def parse_target_line(line):
+    """
+    Parse target line from file.
+    
+    Format: hostname[:port[:mode]]
+    Examples:
+        mail.example.com
+        mail.example.com:587
+        mail.example.com:465:ssl
+        mail.example.com:25:starttls
+        mail.example.com:25:plain
+    
+    Returns: (hostname, port, mode)
+    """
+    parts = line.strip().split(':')
+    hostname = parts[0]
+    port = 25  # default
+    mode = 'auto'  # auto-detect
+    
+    if len(parts) >= 2:
+        try:
+            port = int(parts[1])
+        except ValueError:
+            print(f"{Colors.WARN}[!] Invalid port in '{line}', using default 25{Colors.ENDC}")
+    
+    if len(parts) >= 3:
+        mode = parts[2].lower()
+        if mode not in ['auto', 'ssl', 'starttls', 'plain']:
+            print(f"{Colors.WARN}[!] Invalid mode '{mode}' in '{line}', using auto{Colors.ENDC}")
+            mode = 'auto'
+    
+    return hostname, port, mode
 
 
-   for smtpserver in smtpservers:
-      message = MIMEMultipart("alternative")
-      message["Subject"] = "Proof-of-Concept // Insecure Mail Relay on "+ smtpserver
-      message["From"] = sender_email
-      message["To"] = receiver_email
-
-      # Create HTML version of your message
-      text = """\
-      <html>
-         <style>
-            .content {
-            font-family: Calibri;
-            }
-         </style>
-         <body>
-            <div class='content'>
-               <p>Dears,</p>
-               <p>if you receive this email, your SMTP server is vulnerable to<strong> Open Mail Relay</strong>.</p>
-               <p>Alternatively, you have not correctly configured Sender Policy Framework (SPF) and Domain-based Message Authentication, Reporting & Conformance (DMARC).</p>
-               <p> Affected SMTP Server: """ + smtpserver + """</p>
-               <p>Please forward this email to """ + contact_email + """</p>
-               <p></p>         
-               <p>Have a good day</p>         
-         
-               <br>
-            </div>
-         </body>
-      </html>
-      """
-
-      # Turn these into html MIMEText objects
-      part1 = MIMEText(text, "html")
-
-      # Add HTML parts to MIMEMultipart message
-      # The email client will try to render the last part first
-      message.attach(part1)
-
-      # Encode file in ASCII characters to send by email    
-      encoders.encode_base64(part1)
-
-      # Add attachment to message and convert message to string
-      # message.attach(part)
-      text = message.as_string()
-      print()
-
-      try:
-        if starttls:      
-         with smtplib.SMTP(smtpserver, port) as server:
-             context = ssl._create_unverified_context(ssl.PROTOCOL_TLS_CLIENT)
-             server.ehlo()
-             server.starttls(context=context)
-             server.ehlo()
-             server.sendmail(sender_email, receiver_email, message.as_string())
-             print(bcolors.OK + "[i] Mail Relay tested on: " + smtpserver + ":" + str(port) + bcolors.ENDC)
+def test_smtp_connection(hostname, port, mode='auto'):
+    """
+    Test SMTP connection and determine best connection method.
+    
+    Returns: (success, connection_mode, server_object or None)
+    """
+    # If mode is specified, use it
+    if mode == 'ssl':
+        try:
+            context = ssl.create_default_context()
+            server = smtplib.SMTP_SSL(hostname, port, timeout=10, context=context)
+            server.ehlo()
+            return True, 'ssl', server
+        except Exception as e:
+            return False, 'ssl', None
+    
+    elif mode == 'starttls':
+        try:
+            server = smtplib.SMTP(hostname, port, timeout=10)
+            server.ehlo()
+            context = ssl.create_default_context()
+            server.starttls(context=context)
+            server.ehlo()
+            return True, 'starttls', server
+        except Exception as e:
+            return False, 'starttls', None
+    
+    elif mode == 'plain':
+        try:
+            server = smtplib.SMTP(hostname, port, timeout=10)
+            server.ehlo()
+            return True, 'plain', server
+        except Exception as e:
+            return False, 'plain', None
+    
+    # Auto-detect mode
+    # Try SSL first (common for port 465)
+    if port == 465:
+        try:
+            context = ssl.create_default_context()
+            server = smtplib.SMTP_SSL(hostname, port, timeout=10, context=context)
+            server.ehlo()
+            return True, 'ssl', server
+        except:
+            pass
+    
+    # Try STARTTLS (common for ports 25, 587)
+    try:
+        server = smtplib.SMTP(hostname, port, timeout=10)
+        server.ehlo()
+        if server.has_extn('STARTTLS'):
+            context = ssl.create_default_context()
+            server.starttls(context=context)
+            server.ehlo()
+            return True, 'starttls', server
         else:
-         with smtplib.SMTP(smtpserver, port) as server:
-             server.sendmail(sender_email, receiver_email, message.as_string())
-             print(bcolors.OK + "[i] Mail Relay tested on: " + smtpserver + ":" + str(port) + bcolors.ENDC)
-      except Exception as e:
-        print(bcolors.FAIL + "[!] Mail Relay failed on: " + smtpserver + ":" + str(port) + bcolors.ENDC)
-        print(bcolors.FAIL + "    > " + str(e) + bcolors.ENDC)
-        print()
-        continue
+            # Plain connection works
+            return True, 'plain', server
+    except:
+        pass
+    
+    # Try plain connection as last resort
+    try:
+        server = smtplib.SMTP(hostname, port, timeout=10)
+        server.ehlo()
+        return True, 'plain', server
+    except Exception as e:
+        return False, None, None
+
+
+def create_test_message(sender_email, receiver_email, smtp_server, contact_email):
+    """Create the test email message"""
+    message = MIMEMultipart("alternative")
+    message["Subject"] = f"Security Test: Open Relay Detection on {smtp_server}"
+    message["From"] = sender_email
+    message["To"] = receiver_email
+    
+    html_body = f"""
+    <html>
+        <head>
+            <style>
+                body {{ font-family: Arial, sans-serif; line-height: 1.6; color: #333; }}
+                .container {{ max-width: 600px; margin: 0 auto; padding: 20px; }}
+                .alert {{ background-color: #fff3cd; border-left: 4px solid #ffc107; padding: 15px; margin: 20px 0; }}
+                .info {{ background-color: #d1ecf1; border-left: 4px solid #17a2b8; padding: 15px; margin: 20px 0; }}
+                h2 {{ color: #dc3545; }}
+                code {{ background-color: #f4f4f4; padding: 2px 6px; border-radius: 3px; }}
+            </style>
+        </head>
+        <body>
+            <div class='container'>
+                <h2>⚠️ Security Alert: Open Mail Relay Detected</h2>
+                
+                <div class='alert'>
+                    <strong>If you are receiving this email, your mail server may be vulnerable to open relay attacks.</strong>
+                </div>
+                
+                <p>This is an authorized security test to identify mail relay vulnerabilities.</p>
+                
+                <div class='info'>
+                    <strong>Affected Server:</strong> <code>{smtp_server}</code><br>
+                    <strong>Test Date:</strong> <code>{message["Date"] if "Date" in message else "N/A"}</code>
+                </div>
+                
+                <h3>What is an Open Mail Relay?</h3>
+                <p>An open mail relay allows unauthorized users to send emails through your SMTP server, 
+                which can lead to:</p>
+                <ul>
+                    <li>Spam distribution</li>
+                    <li>Phishing attacks</li>
+                    <li>IP blacklisting</li>
+                    <li>Reputation damage</li>
+                </ul>
+                
+                <h3>Recommended Actions:</h3>
+                <ol>
+                    <li>Configure SMTP authentication requirements</li>
+                    <li>Implement proper SPF and DMARC records</li>
+                    <li>Restrict relay permissions to authorized users/IPs</li>
+                    <li>Review and update mail server security policies</li>
+                </ol>
+                
+                <p><strong>Please forward this email to your security team: {contact_email}</strong></p>
+                
+                <hr>
+                <p style='font-size: 0.9em; color: #666;'>
+                    This is an automated security test. If you have questions, contact: {contact_email}
+                </p>
+            </div>
+        </body>
+    </html>
+    """
+    
+    message.attach(MIMEText(html_body, "html"))
+    return message
+
+
+def test_mail_relay(smtp_server, port, mode, sender_email, receiver_email, contact_email):
+    """Test a single SMTP server for open relay"""
+    print(f"\n{Colors.INFO}[*] Testing: {smtp_server}:{port} (mode: {mode}){Colors.ENDC}")
+    
+    # Test connection
+    success, detected_mode, server = test_smtp_connection(smtp_server, port, mode)
+    
+    if not success:
+        print(f"{Colors.FAIL}    [FAIL] Could not connect to {smtp_server}:{port}{Colors.ENDC}")
+        return False
+    
+    print(f"{Colors.OK}    [INFO] Connected successfully (method: {detected_mode}){Colors.ENDC}")
+    
+    # Create and send test message
+    try:
+        message = create_test_message(sender_email, receiver_email, smtp_server, contact_email)
+        server.sendmail(sender_email, receiver_email, message.as_string())
+        server.quit()
+        
+        print(f"{Colors.WARN}    [VULNERABLE] Email sent successfully - Open relay detected!{Colors.ENDC}")
+        return True
+        
+    except smtplib.SMTPRecipientsRefused as e:
+        print(f"{Colors.OK}    [SECURE] Relay rejected (recipients refused){Colors.ENDC}")
+        try:
+            server.quit()
+        except:
+            pass
+        return False
+        
+    except smtplib.SMTPSenderRefused as e:
+        print(f"{Colors.OK}    [SECURE] Relay rejected (sender refused){Colors.ENDC}")
+        try:
+            server.quit()
+        except:
+            pass
+        return False
+        
+    except Exception as e:
+        print(f"{Colors.FAIL}    [ERROR] {str(e)}{Colors.ENDC}")
+        try:
+            server.quit()
+        except:
+            pass
+        return False
+
+
+def load_targets(filename):
+    """Load target servers from file"""
+    targets = []
+    try:
+        with open(filename, 'r') as f:
+            for line in f:
+                line = line.strip()
+                if line and not line.startswith('#'):
+                    hostname, port, mode = parse_target_line(line)
+                    targets.append((hostname, port, mode))
+        return targets
+    except FileNotFoundError:
+        print(f"{Colors.FAIL}[!] Error: File '{filename}' not found{Colors.ENDC}")
+        sys.exit(1)
+    except Exception as e:
+        print(f"{Colors.FAIL}[!] Error reading file: {e}{Colors.ENDC}")
+        sys.exit(1)
+
 
 def parse_args():
-    format = "%(levelname)s :: %(message)s"
-    parser = argparse.ArgumentParser(description="Open Relay tester")
-    parser.add_argument(
-        "--receiver",
-        help="Receiver of the mail",
-        dest="receiver_email",
-        type=str,
-        required=True
+    """Parse command line arguments"""
+    parser = argparse.ArgumentParser(
+        description="Test SMTP servers for open relay vulnerabilities",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Target File Format:
+  One server per line in the format: hostname[:port[:mode]]
+  
+  Examples:
+    mail.example.com                  (uses port 25, auto-detect SSL)
+    mail.example.com:587              (port 587, auto-detect SSL)
+    mail.example.com:465:ssl          (port 465, force SSL/TLS)
+    mail.example.com:25:starttls      (port 25, force STARTTLS)
+    mail.example.com:25:plain         (port 25, no encryption)
+  
+  Modes: auto, ssl, starttls, plain
+
+Example Usage:
+  python smtp_relay_tester.py \\
+    --sender test@attacker.com \\
+    --receiver admin@target.com \\
+    --contact security@target.com \\
+    --targets servers.txt
+        """
     )
+    
     parser.add_argument(
         "--sender",
-        help="Sender of the mail",
+        help="Email address to send from",
         dest="sender_email",
         type=str,
         required=True
     )
+    
     parser.add_argument(
-        "--targets",
-        help="File with SMTP servers to test",
-        dest="filename",
+        "--receiver",
+        help="Email address to send to",
+        dest="receiver_email",
         type=str,
         required=True
-    ) 
+    )
+    
     parser.add_argument(
         "--contact",
-        help="E-Mail address to forward the mail to",
-        dest="contact",
+        help="Security contact email (included in test message)",
+        dest="contact_email",
         type=str,
         required=True
-    ) 
+    )
+    
     parser.add_argument(
-        "--port",
-        help="SMTP port to connect to",
-        dest="port",
-        type=int,
-        required=False
-    ) 
-    parser.add_argument(
-        "--ssl",
-        help="Whether to use SMTP_SSL or not",
-        dest="ssl",
-        action='store_true',
-        required=False
-    )      
+        "--targets",
+        help="File containing SMTP servers to test",
+        dest="targets_file",
+        type=str,
+        required=True
+    )
+    
+    return parser.parse_args()
 
-    args = parser.parse_args()
-    return args
+
+def main():
+    """Main execution function"""
+    args = parse_args()
+    
+    print_banner()
+    
+    # Extract sender domain for SPF/DMARC checks
+    sender_domain = args.sender_email.split('@')[1]
+    
+    # Check SPF and DMARC
+    check_spf(sender_domain)
+    check_dmarc(sender_domain)
+    
+    # Load targets
+    print(f"\n{Colors.INFO}[*] Loading targets from {args.targets_file}...{Colors.ENDC}")
+    targets = load_targets(args.targets_file)
+    print(f"{Colors.OK}    [INFO] Loaded {len(targets)} target(s){Colors.ENDC}")
+    
+    # Test each target
+    print(f"\n{Colors.BOLD}{'='*70}")
+    print("Starting Open Relay Tests")
+    print(f"{'='*70}{Colors.ENDC}")
+    
+    vulnerable_servers = []
+    
+    for hostname, port, mode in targets:
+        if test_mail_relay(hostname, port, mode, args.sender_email, args.receiver_email, args.contact_email):
+            vulnerable_servers.append(f"{hostname}:{port}")
+    
+    # Summary
+    print(f"\n{Colors.BOLD}{'='*70}")
+    print("Test Summary")
+    print(f"{'='*70}{Colors.ENDC}")
+    print(f"Total servers tested: {len(targets)}")
+    print(f"Vulnerable servers: {len(vulnerable_servers)}")
+    
+    if vulnerable_servers:
+        print(f"\n{Colors.WARN}[!] The following servers are vulnerable:{Colors.ENDC}")
+        for server in vulnerable_servers:
+            print(f"    - {server}")
+    else:
+        print(f"\n{Colors.OK}[✓] No open relays detected{Colors.ENDC}")
+    
+    print()
+
 
 if __name__ == "__main__":
     main()
